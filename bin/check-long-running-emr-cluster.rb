@@ -16,7 +16,7 @@
 #   gem: sensu-plugin
 #
 # USAGE:
-#   ./check-emr-cluster.rb --cluster-name MyCluster --aws-region eu-west-1 --use-iam --warning-over 14400 --critical-over 21600
+#   ./check-emr-cluster.rb --aws-region eu-west-1 --use-iam --warning-over 14400 --critical-over 21600
 #
 # NOTES:
 #
@@ -52,12 +52,6 @@ class CheckEMRCluster < Sensu::Plugin::Check::CLI
          short: '-u',
          long: '--use-iam',
          description: 'Use IAM role authenticiation. Instance must have IAM role assigned for this to work'
-
-  option :cluster_name,
-         short: '-b CLUSTER_NAME',
-         long: '--cluster-name',
-         description: 'The name of the EMR cluster',
-         required: true
 
   option :warning_over,
          description: 'Warn if cluster\'s age is greater than provided age in seconds',
@@ -110,35 +104,32 @@ class CheckEMRCluster < Sensu::Plugin::Check::CLI
     end
 
     emr = Aws::EMR::Client.new(aws_config.merge!(region: config[:aws_region]))
-    begin
-      emr_clusters = emr.list_clusters(created_after: Time.now - 24 * 60 * 60, created_before: Time.now).clusters
-      clusters = emr_clusters.select { |c| c.name == config[:cluster_name] }
-
-      critical "EMR cluster #{config[:cluster_name]} appears #{clusters.size} times" if clusters.size > 1
-      critical "EMR cluster #{config[:cluster_name]} not found" if clusters.empty?
-
-      cluster = clusters.first
+    
+    emr_clusters = emr.list_clusters(created_after: Time.now - 24 * 60 * 60 * 30, created_before: Time.now).clusters
+    running_clusters = emr_clusters.select { |c| c.status.state == "RUNNING" }
+    waiting_clusters = emr_clusters.select { |c| c.status.state == "WAITING" }
+    
+    for cluster in running_clusters
       state = cluster.status.state
       if state == 'TERMINATED_WITH_ERRORS'
-        critical "EMR cluster #{config[:cluster_name]} state is '#{state}'"
+        warning "EMR cluster #{cluster.name} state is '#{state}'"
       else
         creation_date_time = cluster.status.timeline.creation_date_time
         end_date_time = cluster.status.timeline.end_date_time || Time.now
         age = end_date_time.to_i - creation_date_time.to_i
         if age >= config[:critical_over]
-          critical "EMR cluster #{config[:cluster_name]} - #{humanize(age)} vs. #{humanize(config[:critical_over])}"
+          critical "Critical EMR cluster #{cluster.name} running for #{humanize(age)} which is more than #{humanize(config[:critical_over])}"
         elsif age >= config[:warning_over]
-          warning "EMR cluster #{config[:cluster_name]} - #{humanize(age)} vs. #{humanize(config[:warning_over])}"
+          warning "Warning EMR cluster #{cluster.name} running for #{humanize(age)} which is more than #{humanize(config[:warning_over])}"
         elsif age <= config[:critical_under] && state == 'TERMINATED'
-          critical "EMR cluster #{config[:cluster_name]} - #{humanize(age)} vs. #{humanize(config[:critical_under])}"
+          critical "CriticalEMR cluster #{cluster.name} - #{humanize(age)} vs. #{humanize(config[:critical_under])}"
         elsif age <= config[:warning_under] && state == 'TERMINATED'
-          warning "EMR cluster #{config[:cluster_name]} - #{humanize(age)} vs. #{humanize(config[:warning_under])}"
+          warning "Warning EMR cluster #{cluster.name} - #{humanize(age)} vs. #{humanize(config[:warning_under])}"
         else
-          ok "EMR cluster #{config[:cluster_name]} - #{humanize(age)}"
+          puts("Ok EMR cluster #{cluster.name} running for - #{humanize(age)}")
         end
       end
-    rescue StandardError => e
-      critical "EMR cluster #{config[:cluster_name]} - #{e.message}"
     end
+    ok "Status OK, No long running cluster"
   end
 end
